@@ -12,6 +12,25 @@ import { DEFAULT_HTTP_CLIENT_CONFIG } from "../types.js";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
+function isPrivateLocalHost(host: string): boolean {
+  if (LOOPBACK_HOSTS.has(host)) return true;
+
+  const parts = host.split(".").map(Number);
+  if (
+    parts.length !== 4 ||
+    parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
+  ) {
+    return false;
+  }
+
+  // RFC1918 private IPv4 ranges
+  if (parts[0] === 10) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+
+  return false;
+}
+
 function assertSecureUrl(
   url: string,
   allowHttpOnLoopback: boolean,
@@ -29,7 +48,7 @@ function assertSecureUrl(
   }
 
   const host = parsed.hostname.toLowerCase();
-  if (protocol === "http:" && allowHttpOnLoopback && LOOPBACK_HOSTS.has(host)) {
+  if (protocol === "http:" && allowHttpOnLoopback && isPrivateLocalHost(host)) {
     return;
   }
 

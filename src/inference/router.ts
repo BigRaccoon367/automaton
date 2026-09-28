@@ -196,6 +196,31 @@ export class InferenceRouter {
 
     const tierRank = TIER_ORDER[tier] ?? 0;
 
+    // Raccoon Local:
+    // Prefer an explicitly configured FREE local model before Conway/cloud
+    // routing-matrix candidates.
+    const strategy = this.budget.config;
+    const configuredLocalIds = [
+      strategy.inferenceModel,
+      strategy.lowComputeModel,
+      strategy.criticalModel,
+    ];
+
+    for (const modelId of configuredLocalIds) {
+      if (!modelId) continue;
+
+      const entry = this.registry.get(modelId);
+      if (!entry || !entry.enabled) continue;
+
+      const isFree =
+        entry.costPer1kInput === 0 &&
+        entry.costPer1kOutput === 0;
+
+      if (isFree) {
+        return entry;
+      }
+    }
+
     // 1. Try routing-matrix candidates
     const preference = this.getPreference(tier, taskType);
     if (preference && preference.candidates.length > 0) {
@@ -209,7 +234,6 @@ export class InferenceRouter {
 
     // 2. Fall back to user-configured models.
     //    This handles local/Ollama setups where routing-matrix models are absent.
-    const strategy = this.budget.config;
     const fallbackIds: (string | undefined)[] =
       tier === "critical" || tier === "dead"
         ? [strategy.criticalModel, strategy.inferenceModel, strategy.lowComputeModel]

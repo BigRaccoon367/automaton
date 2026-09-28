@@ -1,83 +1,108 @@
 /**
- * Ollama Model Discovery
+ * Local model discovery.
  *
- * Fetches available models from a local Ollama instance and registers
- * them in the model registry so they can be used for inference.
+ * Supports:
+ *   1. Ollama     -> /api/tags
+ *   2. LM Studio -> /v1/models (OpenAI-compatible fallback)
  */
 
 import type BetterSqlite3 from "better-sqlite3";
-import { modelRegistryUpsert, modelRegistryGet } from "../state/database.js";
+import {
+  modelRegistryUpsert,
+  modelRegistryGet,
+} from "../state/database.js";
 import type { ModelRegistryRow } from "../types.js";
 import { createLogger } from "../observability/logger.js";
 
 const logger = createLogger("ollama");
 
 interface OllamaModel {
-  name: string;
-  model: string;
-  modified_at: string;
-  size: number;
-  details?: {
-    parameter_size?: string;
-    quantization_level?: string;
-    family?: string;
-  };
+  name?: string;
+  model?: string;
 }
 
 interface OllamaTagsResponse {
-  models: OllamaModel[];
+  models?: OllamaModel[];
 }
 
-/**
- * Fetch all available models from Ollama's /api/tags endpoint
- * and upsert them into the model registry.
- *
- * Returns the list of discovered model IDs, or an empty array if
- * Ollama is unreachable (treated as a soft failure).
- */
+interface OpenAIModelsResponse {
+  data?: Array<{
+    id?: string;
+  }>;
+}
+
 export async function discoverOllamaModels(
   baseUrl: string,
   db: BetterSqlite3.Database,
 ): Promise<string[]> {
-  const url = `${baseUrl.replace(/\/$/, "")}/api/tags`;
+  const root = baseUrl.replace(/\/$/, "");
+  let modelIds: string[] = [];
 
-  let data: OllamaTagsResponse;
+  // 1. Native Ollama discovery
   try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(5_000) });
-    if (!resp.ok) {
-      logger.warn(`Ollama /api/tags returned ${resp.status} — skipping discovery`);
-      return [];
+    const resp = await fetch(`${root}/api/tags`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+
+    if (resp.ok) {
+      const data = (await resp.json()) as OllamaTagsResponse;
+
+      if (Array.isArray(data.models)) {
+        modelIds = data.models
+          .map((m) => m.name || m.model || "")
+          .filter(Boolean);
+      }
     }
-    data = await resp.json() as OllamaTagsResponse;
-  } catch (err: any) {
-    logger.warn(`Ollama not reachable at ${baseUrl}: ${err.message}`);
-    return [];
+  } catch {
+    // Fall through to OpenAI-compatible discovery.
   }
 
-  if (!Array.isArray(data.models)) {
-    logger.warn("Ollama /api/tags response has no models array");
+  // 2. LM Studio / generic OpenAI-compatible server
+  if (modelIds.length === 0) {
+    try {
+      const resp = await fetch(`${root}/v1/models`, {
+        signal: AbortSignal.timeout(5_000),
+      });
+
+      if (resp.ok) {
+        const data = (await resp.json()) as OpenAIModelsResponse;
+
+        if (Array.isArray(data.data)) {
+          modelIds = data.data
+            .map((m) => m.id || "")
+            .filter(Boolean);
+        }
+      }
+    } catch (err: any) {
+      logger.warn(
+        `Local inference server not reachable at ${baseUrl}: ${err.message}`,
+      );
+      return [];
+    }
+  }
+
+  if (modelIds.length === 0) {
+    logger.warn(`No local models discovered at ${baseUrl}`);
     return [];
   }
 
   const now = new Date().toISOString();
   const registered: string[] = [];
 
-  for (const m of data.models) {
-    const modelId = m.name || m.model;
-    if (!modelId) continue;
-
+  for (const modelId of modelIds) {
     const existing = modelRegistryGet(db, modelId);
+
     const row: ModelRegistryRow = {
       modelId,
+      // Keep provider="ollama" because Automaton already routes this
+      // provider through a local OpenAI-compatible endpoint.
       provider: "ollama",
       displayName: formatDisplayName(modelId),
-      // Ollama models are local — no cost
       tierMinimum: existing?.tierMinimum ?? "critical",
       costPer1kInput: 0,
       costPer1kOutput: 0,
       maxTokens: existing?.maxTokens ?? 4096,
       contextWindow: existing?.contextWindow ?? 8192,
-      // Most modern Ollama models support tools; default true
       supportsTools: existing?.supportsTools ?? true,
       supportsVision: existing?.supportsVision ?? false,
       parameterStyle: "max_tokens",
@@ -90,18 +115,16 @@ export async function discoverOllamaModels(
     registered.push(modelId);
   }
 
-  if (registered.length > 0) {
-    logger.info(`Ollama: registered ${registered.length} model(s): ${registered.join(", ")}`);
-  }
+  logger.info(
+    `Local inference: registered ${registered.length} model(s): ${registered.join(", ")}`,
+  );
 
   return registered;
 }
 
 function formatDisplayName(modelId: string): string {
-  // "llama3.2:latest" → "Llama 3.2 (latest)"
-  const [name, tag] = modelId.split(":");
-  const pretty = name
+  return modelId
+    .replace(/\//g, " / ")
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
-  return tag && tag !== "latest" ? `${pretty} (${tag})` : pretty;
 }
