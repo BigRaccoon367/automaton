@@ -35,6 +35,7 @@ import {
   executeTool,
 } from "./tools.js";
 import { sanitizeInput } from "./injection-defense.js";
+import { LoopDetector } from "./loop-detector.js";
 import { getSurvivalTier } from "../conway/credits.js";
 import { getUsdcBalance } from "../conway/x402.js";
 import {
@@ -99,6 +100,7 @@ export async function runAgentLoop(
   const builtinTools = createBuiltinTools(identity.sandboxId);
   const installedTools = loadInstalledTools(db);
   const tools = [...builtinTools, ...installedTools];
+  const loopDetector = new LoopDetector({ maxIdenticalCalls: 3 });
 
   // Local Lite: keep all tool implementations available to the runtime,
   // but expose only the minimal observation set to the model.
@@ -669,18 +671,31 @@ export async function runAgentLoop(
 
           log(config, `[TOOL] ${tc.function.name}(${JSON.stringify(args).slice(0, 100)})`);
 
-          const result = await executeTool(
+          const loopCheck = loopDetector.recordToolCall(
             tc.function.name,
-            args,
-            tools,
-            toolContext,
-            policyEngine,
-            spendTracker ? {
-              inputSource: currentInputSource,
-              turnToolCallCount: turn.toolCalls.filter(t => t.name === "transfer_credits").length,
-              sessionSpend: spendTracker,
-            } : undefined,
+            tc.function.arguments,
           );
+
+          const result: ToolCallResult = loopCheck.blocked
+            ? {
+                id: tc.id,
+                name: tc.function.name,
+                arguments: args,
+                result: `LOOP DETECTED: ${loopCheck.reason}`,
+                durationMs: 0,
+              }
+            : await executeTool(
+                tc.function.name,
+                args,
+                tools,
+                toolContext,
+                policyEngine,
+                spendTracker ? {
+                  inputSource: currentInputSource,
+                  turnToolCallCount: turn.toolCalls.filter(t => t.name === "transfer_credits").length,
+                  sessionSpend: spendTracker,
+                } : undefined,
+              );
 
           // Override the ID to match the inference call's ID
           result.id = tc.id;
@@ -748,7 +763,7 @@ export async function runAgentLoop(
       // ── Loop Detection ──
       if (turn.toolCalls.length > 0) {
         const currentPattern = turn.toolCalls
-          .map((tc) => tc.name)
+          .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`)
           .sort()
           .join(",");
         lastToolPatterns.push(currentPattern);

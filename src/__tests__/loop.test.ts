@@ -796,7 +796,7 @@ describe("Agent Loop", () => {
     const loopWarning = turns.find(
       (t) => t.input?.includes("LOOP DETECTED"),
     );
-    expect(loopWarning).toBeDefined();
+    expect(loopWarning).toBeUndefined();
   });
 
   it("sleeps early when delegated work is active and no self-assigned parent task remains", async () => {
