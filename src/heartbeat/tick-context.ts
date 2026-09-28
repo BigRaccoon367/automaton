@@ -48,7 +48,7 @@ export async function buildTickContext(
   const startedAt = new Date();
 
   // Fetch balances ONCE
-  let creditBalance = 0;
+  let creditBalance = -1;
   try {
     creditBalance = await conway.getCreditsBalance();
   } catch (err: any) {

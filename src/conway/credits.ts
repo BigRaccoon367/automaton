@@ -36,6 +36,10 @@ export async function checkFinancialState(
  * Only negative balance (API-confirmed debt) = "dead".
  */
 export function getSurvivalTier(creditsCents: number): SurvivalTier {
+  // -1 is the runtime sentinel for an unreachable balance API.
+  // Unknown balance is not the same as confirmed debt/death.
+  if (creditsCents === -1) return "low_compute";
+
   if (creditsCents > SURVIVAL_THRESHOLDS.high) return "high";
   if (creditsCents > SURVIVAL_THRESHOLDS.normal) return "normal";
   if (creditsCents > SURVIVAL_THRESHOLDS.low_compute) return "low_compute";

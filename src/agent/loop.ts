@@ -99,6 +99,17 @@ export async function runAgentLoop(
   const builtinTools = createBuiltinTools(identity.sandboxId);
   const installedTools = loadInstalledTools(db);
   const tools = [...builtinTools, ...installedTools];
+
+  // Local Lite: keep all tool implementations available to the runtime,
+  // but expose only the minimal observation set to the model.
+  const localLiteToolNames = new Set([
+    "exec",
+    "read_file",
+    "git_status",
+    "git_diff",
+    "recall_facts",
+  ]);
+  const exposedTools = tools.filter((tool) => localLiteToolNames.has(tool.name));
   const toolContext: ToolContext = {
     identity,
     config,
@@ -507,7 +518,7 @@ export async function runAgentLoop(
         financial,
         state: db.getAgentState(),
         db,
-        tools,
+        tools: exposedTools,
         skills,
         isFirstRun,
       });
@@ -599,7 +610,7 @@ export async function runAgentLoop(
       const survivalTier = getSurvivalTier(financial.creditsCents);
       log(config, `[THINK] Routing inference (tier: ${survivalTier}, model: ${inference.getDefaultModel()})...`);
 
-      const inferenceTools = toolsToInferenceFormat(tools);
+      const inferenceTools = toolsToInferenceFormat(exposedTools);
       const routerResult = await inferenceRouter.route(
         {
           messages: messages,
