@@ -110,6 +110,7 @@ export async function runAgentLoop(
     "git_status",
     "git_diff",
     "recall_facts",
+    "codex_task",
   ]);
   const exposedTools = tools.filter((tool) => localLiteToolNames.has(tool.name));
   const toolContext: ToolContext = {
@@ -513,6 +514,7 @@ export async function runAgentLoop(
       // Keep at least the last 2 turns for continuity, even if idle
       const recentTurns = trimContext(
         meaningfulTurns.length > 0 ? meaningfulTurns : allTurns.slice(-2),
+        ollamaBaseUrl ? 3 : 20,
       );
       const systemPrompt = buildSystemPrompt({
         identity,
@@ -523,13 +525,24 @@ export async function runAgentLoop(
         tools: exposedTools,
         skills,
         isFirstRun,
+        localLite: Boolean(ollamaBaseUrl),
       });
 
       // Phase 2.2: Pre-turn memory retrieval
       let memoryBlock: string | undefined;
       try {
         const sessionId = db.getKV("session_id") || "default";
-        const retriever = new MemoryRetriever(db.raw, DEFAULT_MEMORY_BUDGET);
+        const memoryBudget = ollamaBaseUrl
+          ? {
+              workingMemoryTokens: 150,
+              episodicMemoryTokens: 250,
+              semanticMemoryTokens: 250,
+              proceduralMemoryTokens: 100,
+              relationshipMemoryTokens: 50,
+            }
+          : DEFAULT_MEMORY_BUDGET;
+
+        const retriever = new MemoryRetriever(db.raw, memoryBudget);
         const memories = retriever.retrieve(sessionId, pendingInput?.content);
         if (memories.totalTokens > 0) {
           memoryBlock = formatMemoryBlock(memories);
@@ -539,10 +552,21 @@ export async function runAgentLoop(
         // Memory failure must not block the agent loop
       }
 
+      const contextBudget = ollamaBaseUrl
+        ? {
+            total: 6000,
+            systemPrompt: 1500,
+            recentTurns: 2500,
+            toolResults: 1200,
+            memoryRetrieval: 800,
+          }
+        : undefined;
+
       let messages = buildContextMessages(
         systemPrompt,
         recentTurns,
         pendingInput,
+        contextBudget ? { budget: contextBudget } : undefined,
       );
 
       // Inject memory block after system prompt, before conversation history
@@ -613,6 +637,7 @@ export async function runAgentLoop(
       log(config, `[THINK] Routing inference (tier: ${survivalTier}, model: ${inference.getDefaultModel()})...`);
 
       const inferenceTools = toolsToInferenceFormat(exposedTools);
+
       const routerResult = await inferenceRouter.route(
         {
           messages: messages,
@@ -909,16 +934,28 @@ export async function runAgentLoop(
         (!response.toolCalls || response.toolCalls.length === 0) &&
         response.finishReason === "stop"
       ) {
-        // Agent produced text without tool calls.
-        // This is a natural pause point -- no work queued, sleep briefly.
-        log(config, "[IDLE] No pending inputs. Entering brief sleep.");
-        db.setKV(
-          "sleep_until",
-          new Date(Date.now() + 60_000).toISOString(),
-        );
-        db.setAgentState("sleeping");
-        onStateChange?.("sleeping");
-        running = false;
+        const hasReceivedInbox = !!db.raw
+          .prepare(
+            "SELECT 1 FROM inbox_messages WHERE status = 'received' LIMIT 1",
+          )
+          .get();
+
+        if (hasReceivedInbox) {
+          log(
+            config,
+            "[INBOX] Pending received message detected; continuing before sleep.",
+          );
+        } else {
+          // Agent produced text without tool calls and no queued inbox work remains.
+          log(config, "[IDLE] No pending inputs. Entering brief sleep.");
+          db.setKV(
+            "sleep_until",
+            new Date(Date.now() + 60_000).toISOString(),
+          );
+          db.setAgentState("sleeping");
+          onStateChange?.("sleeping");
+          running = false;
+        }
       }
 
       consecutiveErrors = 0;

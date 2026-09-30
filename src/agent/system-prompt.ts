@@ -138,6 +138,14 @@ Priorities:
 4. Validate changes with typecheck/build and runtime tests.
 5. Record failures and useful findings for later evaluation.
 
+Codex worker policy:
+- Handle simple file reads, status checks, logs, and straightforward reasoning yourself.
+- Use codex_task only for difficult coding analysis or implementation planning that clearly benefits from a stronger coding model.
+- Always scope codex_task to 1-3 specific files.
+- Do not call codex_task repeatedly for the same problem unless new evidence materially changes the task.
+- Reuse prior Codex results when available instead of calling Codex again.
+- Codex usage is expensive. Prefer local reasoning and deterministic tools when sufficient.
+
 Human approval is required before:
 - modifying core rules or approved assistant behavior
 - destructive or irreversible actions
@@ -222,6 +230,7 @@ export function buildSystemPrompt(params: {
   tools: AutomatonTool[];
   skills?: Skill[];
   isFirstRun: boolean;
+  localLite?: boolean;
 }): string {
   const {
     identity,
@@ -232,6 +241,7 @@ export function buildSystemPrompt(params: {
     tools,
     skills,
     isFirstRun,
+    localLite = false,
   } = params;
 
   const sections: string[] = [];
@@ -239,13 +249,59 @@ export function buildSystemPrompt(params: {
   const chainType = config.chainType || identity.chainType || "evm";
   const addressLabel = chainType === "solana" ? "Solana" : "Ethereum";
 
+  // Local Lite: compact prompt for small local-context models.
+  // Production/default mode continues through the full prompt below.
+  if (localLite) {
+    const localToolDescriptions = tools
+      .map(
+        (t) =>
+          `- ${t.name}: ${t.description}`,
+      )
+      .join("\n");
+
+    return [
+      `You are ${config.name}, a local autonomous development agent.`,
+      `Local mode is active. Conway credit state is unavailable and is not a survival emergency.
+Do not pursue funding, top-ups, replication, or external deployment because of unavailable Conway credits.`,
+      `Safety:
+- Never harm, deceive, steal, spam, or expose credentials.
+- Require human approval for spending, publishing, messaging, registrations, irreversible actions, core-rule changes, and model training/replacement.
+- Keep actions small, observable, and reversible.`,
+      OPERATIONAL_CONTEXT,
+      `Current state: ${state}
+Inference model: ${config.inferenceModel}
+Repository root: ${process.cwd()}
+Repository source paths such as src/agent/codex-worker.ts are relative to this repository root.
+When a tool requests a repository-relative path, preserve that exact relative path. Never prepend /home, ~, or another guessed directory.
+A failed malformed absolute path does not mean the repository-relative file is missing.`,
+      `Codex rules:
+- Use codex_task only for difficult coding work.
+- Use 1-3 repository-relative file paths only.
+- Never pass absolute paths, ~ paths, or directories.
+- Do not repeat the same Codex task without materially new evidence.`,
+      `--- AVAILABLE TOOLS ---
+${localToolDescriptions}
+--- END TOOLS ---`,
+    ].join("\n\n");
+  }
+
   // Layer 1: Core Rules (immutable, chain-aware)
   sections.push(getCoreRules(chainType));
 
   // Layer 2: Core Identity (immutable, chain-aware)
   sections.push(getCoreIdentity(chainType));
-  sections.push(AGENTIC_SOCIOLOGY);
-  sections.push(`--- CONSTITUTION (immutable, protected) ---\n${loadConstitution()}\n--- END CONSTITUTION ---`);
+
+  if (!localLite) {
+    sections.push(AGENTIC_SOCIOLOGY);
+    sections.push(`--- CONSTITUTION (immutable, protected) ---\n${loadConstitution()}\n--- END CONSTITUTION ---`);
+  } else {
+    sections.push(
+      `--- LOCAL SAFETY SUMMARY ---
+Never harm, deceive, steal, spam, or perform unauthorized external actions.
+Require human approval for spending, publishing, messaging, registrations, irreversible actions, core-rule changes, and model training/replacement.
+--- END LOCAL SAFETY SUMMARY ---`,
+    );
+  }
   sections.push(
     `Your name is ${config.name}.
 Your ${addressLabel} address is ${identity.address}.
@@ -255,7 +311,7 @@ Your chain type is ${chainType}.`,
   );
 
   // Layer 3: SOUL.md -- structured soul model injection (Phase 2.1)
-  const soul = loadCurrentSoul(db.raw);
+  const soul = localLite ? null : loadCurrentSoul(db.raw);
   if (soul) {
     // Track content hash for unauthorized change detection
     const lastHash = db.getKV("soul_content_hash");
@@ -296,7 +352,7 @@ Your chain type is ${chainType}.`,
   }
 
   // Layer 3.5: WORKLOG.md -- persistent working context
-  const worklogContent = loadWorklog();
+  const worklogContent = localLite ? null : loadWorklog();
   if (worklogContent) {
     sections.push(
       `--- WORKLOG.md (your persistent working context — UPDATE THIS after each task!) ---\n${worklogContent}\n--- END WORKLOG.md ---\n\nIMPORTANT: After completing any task or making any decision, update WORKLOG.md using write_file.\nThis is how you remember what you were doing across turns. Without it, you lose context and repeat yourself.`,

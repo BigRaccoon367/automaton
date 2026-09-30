@@ -211,6 +211,71 @@ export function createBuiltinTools(sandboxId: string): AutomatonTool[] {
       },
     },
     {
+      name: "codex_task",
+      description:
+        "Delegate a narrowly scoped read-only coding analysis task to Codex. EXPENSIVE: consumes Codex usage. Use only for difficult coding analysis, not simple file reads, status checks, or shell commands. Provide 1-3 specific files.",
+      category: "vm",
+      riskLevel: "caution",
+      parameters: {
+        type: "object",
+        properties: {
+          task: {
+            type: "string",
+            description: "Specific coding analysis task for Codex",
+          },
+          files: {
+            type: "array",
+            description: "1-3 repository-relative file paths only, for example src/agent/codex-worker.ts. Never use absolute paths or paths starting with / or ~.",
+            items: { type: "string" },
+            minItems: 1,
+            maxItems: 3,
+          },
+          success_criteria: {
+            type: "string",
+            description: "What a successful Codex answer must contain",
+          },
+        },
+        required: ["task", "files", "success_criteria"],
+      },
+      execute: async (args) => {
+        const task = typeof args.task === "string" ? args.task : "";
+        const successCriteria =
+          typeof args.success_criteria === "string"
+            ? args.success_criteria
+            : "";
+        const files = Array.isArray(args.files)
+          ? args.files.filter(
+              (file): file is string => typeof file === "string",
+            )
+          : [];
+
+        try {
+          const { runCodexReadOnlyTask } =
+            await import("./codex-worker.js");
+
+          const result = await runCodexReadOnlyTask({
+            task,
+            files,
+            successCriteria,
+          });
+
+          return [
+            result.cached
+              ? "Codex worker result reused from cache."
+              : "Codex worker completed.",
+            `Tokens used this call: ${result.tokensUsed ?? "unknown"}`,
+            `Cached: ${result.cached ? "yes" : "no"}`,
+            "",
+            result.response,
+          ].join("\n");
+        } catch (error) {
+          return `ERROR: Codex worker failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      },
+    },
+    {
       name: "expose_port",
       description:
         "Expose a port from your sandbox to the internet. Returns a public URL.",
