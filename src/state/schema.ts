@@ -5,7 +5,7 @@
  * The database IS the automaton's memory.
  */
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const CREATE_TABLES = `
   -- Schema version tracking
@@ -678,4 +678,27 @@ export const MIGRATION_V10 = `
 
   CREATE INDEX idx_knowledge_category ON knowledge_store(category);
   CREATE INDEX idx_knowledge_key ON knowledge_store(key);
+`;
+
+// V0.7: Opportunity discovery storage (no execution or goal creation).
+export const MIGRATION_V12 = `
+  CREATE TABLE IF NOT EXISTS opportunities (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'discovered',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    estimated_value_cents INTEGER NOT NULL DEFAULT 0,
+    estimated_effort TEXT NOT NULL DEFAULT 'unknown',
+    risk_level TEXT NOT NULL DEFAULT 'low',
+    confidence REAL NOT NULL DEFAULT 0,
+    requires_external_action INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    converted_goal_id TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_opportunities_status ON opportunities(status);
+  CREATE INDEX IF NOT EXISTS idx_opportunities_created_at ON opportunities(created_at);
 `;

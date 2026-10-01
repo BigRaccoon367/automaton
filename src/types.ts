@@ -623,7 +623,49 @@ export const DEFAULT_HTTP_CLIENT_CONFIG: HttpClientConfig = {
 
 // ─── Database ────────────────────────────────────────────────────
 
+export type OpportunityStatus = "discovered" | "shortlisted" | "rejected" | "converted";
+export type OpportunityEffort = "unknown" | "low" | "medium" | "high";
+// Estimated opportunity risk, distinct from the tool-policy RiskLevel.
+export type OpportunityRiskLevel = "low" | "medium" | "high";
+
+export interface Opportunity {
+  id: string;
+  title: string;
+  description: string;
+  source: string;
+  status: OpportunityStatus;
+  evidence: string[];
+  estimatedValueCents: number;
+  estimatedEffort: OpportunityEffort;
+  riskLevel: OpportunityRiskLevel;
+  confidence: number;
+  /** Future external actions still require the existing approval mechanisms. */
+  requiresExternalAction: boolean;
+  createdAt: string;
+  reviewedAt: string | null;
+  convertedGoalId: string | null;
+}
+
+export type OpportunityInput = Pick<Opportunity, "title" | "description" | "source"> &
+  Partial<Omit<Opportunity, "title" | "description" | "source">>;
+
+export interface OpportunityListOptions {
+  status?: OpportunityStatus;
+  limit?: number;
+}
+
+export interface OpportunityReview {
+  status: Exclude<OpportunityStatus, "discovered">;
+  convertedGoalId?: string | null;
+}
+
 export interface AutomatonDatabase {
+  // Discovery storage only: these methods never create goals or execute actions.
+  insertOpportunity(opportunity: OpportunityInput): Opportunity;
+  getOpportunityById(id: string): Opportunity | undefined;
+  listOpportunities(options?: OpportunityListOptions): Opportunity[];
+  updateOpportunityReview(id: string, review: OpportunityReview): Opportunity;
+
   // Identity
   getIdentity(key: string): string | undefined;
   setIdentity(key: string, value: string): void;

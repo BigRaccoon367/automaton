@@ -26,6 +26,11 @@ import type {
   RegistryEntry,
   ReputationEntry,
   InboxMessage,
+  Opportunity,
+  OpportunityInput,
+  OpportunityListOptions,
+  OpportunityReview,
+  OpportunityStatus,
 } from "../types.js";
 import {
   SCHEMA_VERSION,
@@ -46,6 +51,7 @@ import {
   MIGRATION_V9_ALTER_CHILDREN_ROLE,
   MIGRATION_V10,
   MIGRATION_V11,
+  MIGRATION_V12,
 } from "./schema.js";
 import type {
   RiskLevel,
@@ -519,6 +525,10 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
   };
 
   return {
+    insertOpportunity: (opportunity) => insertOpportunity(db, opportunity),
+    getOpportunityById: (id) => getOpportunityById(db, id),
+    listOpportunities: (options) => listOpportunities(db, options),
+    updateOpportunityReview: (id, review) => updateOpportunityReview(db, id, review),
     getIdentity,
     setIdentity,
     insertTurn,
@@ -625,6 +635,10 @@ function applyMigrations(db: DatabaseType): void {
         try { db.exec(MIGRATION_V11); } catch { /* column may already exist */ }
       },
     },
+    {
+      version: 12,
+      apply: () => db.exec(MIGRATION_V12),
+    },
   ];
 
   for (const m of migrations) {
@@ -639,6 +653,139 @@ function applyMigrations(db: DatabaseType): void {
 }
 
 // ─── Exported Helpers ───────────────────────────────────────────
+
+const OPPORTUNITY_STATUSES: OpportunityStatus[] = [
+  "discovered", "shortlisted", "rejected", "converted",
+];
+
+function validateOpportunityStatus(status: OpportunityStatus): void {
+  if (!OPPORTUNITY_STATUSES.includes(status)) {
+    throw new Error(`Invalid opportunity status: ${status}`);
+  }
+}
+
+function validateOpportunity(opportunity: Opportunity): void {
+  if (typeof opportunity.title !== "string" || !opportunity.title.trim()) {
+    throw new Error("Opportunity title must not be empty");
+  }
+  validateOpportunityStatus(opportunity.status);
+  if (!Number.isFinite(opportunity.confidence) || opportunity.confidence < 0 || opportunity.confidence > 1) {
+    throw new Error("Opportunity confidence must be between 0 and 1");
+  }
+  if (!Number.isSafeInteger(opportunity.estimatedValueCents) || opportunity.estimatedValueCents < 0) {
+    throw new Error("Opportunity estimated value must be a non-negative integer");
+  }
+  if (!Array.isArray(opportunity.evidence) || !opportunity.evidence.every((item) => typeof item === "string")) {
+    throw new Error("Opportunity evidence must be an array of strings");
+  }
+  if (!["unknown", "low", "medium", "high"].includes(opportunity.estimatedEffort)) {
+    throw new Error("Invalid opportunity effort");
+  }
+  if (!["low", "medium", "high"].includes(opportunity.riskLevel)) {
+    throw new Error("Invalid opportunity risk level");
+  }
+  if (typeof opportunity.requiresExternalAction !== "boolean") {
+    throw new Error("Opportunity requiresExternalAction must be a boolean");
+  }
+  if (opportunity.status !== "converted" && opportunity.convertedGoalId !== null) {
+    throw new Error("Only converted opportunities may reference a goal");
+  }
+}
+
+function deserializeOpportunity(row: any): Opportunity {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    source: row.source,
+    status: row.status as OpportunityStatus,
+    evidence: JSON.parse(row.evidence),
+    estimatedValueCents: row.estimated_value_cents,
+    estimatedEffort: row.estimated_effort,
+    riskLevel: row.risk_level,
+    confidence: row.confidence,
+    requiresExternalAction: row.requires_external_action === 1,
+    createdAt: row.created_at,
+    reviewedAt: row.reviewed_at ?? null,
+    convertedGoalId: row.converted_goal_id ?? null,
+  };
+}
+
+export function insertOpportunity(db: DatabaseType, input: OpportunityInput): Opportunity {
+  const opportunity: Opportunity = {
+    id: input.id ?? ulid(),
+    title: input.title,
+    description: input.description,
+    source: input.source,
+    status: input.status ?? "discovered",
+    evidence: input.evidence ?? [],
+    estimatedValueCents: input.estimatedValueCents ?? 0,
+    estimatedEffort: input.estimatedEffort ?? "unknown",
+    riskLevel: input.riskLevel ?? "low",
+    confidence: input.confidence ?? 0,
+    requiresExternalAction: input.requiresExternalAction ?? false,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    reviewedAt: input.reviewedAt ?? null,
+    convertedGoalId: input.convertedGoalId ?? null,
+  };
+  validateOpportunity(opportunity);
+  db.prepare(`INSERT INTO opportunities
+    (id, title, description, source, status, evidence, estimated_value_cents,
+     estimated_effort, risk_level, confidence, requires_external_action,
+     created_at, reviewed_at, converted_goal_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    opportunity.id, opportunity.title, opportunity.description, opportunity.source,
+    opportunity.status, JSON.stringify(opportunity.evidence), opportunity.estimatedValueCents,
+    opportunity.estimatedEffort, opportunity.riskLevel, opportunity.confidence,
+    opportunity.requiresExternalAction ? 1 : 0, opportunity.createdAt,
+    opportunity.reviewedAt, opportunity.convertedGoalId,
+  );
+  return opportunity;
+}
+
+export function getOpportunityById(db: DatabaseType, id: string): Opportunity | undefined {
+  const row = db.prepare("SELECT * FROM opportunities WHERE id = ?").get(id);
+  return row ? deserializeOpportunity(row) : undefined;
+}
+
+export function listOpportunities(db: DatabaseType, options: OpportunityListOptions = {}): Opportunity[] {
+  if (options.status !== undefined) validateOpportunityStatus(options.status);
+  if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit < 0)) {
+    throw new Error("Opportunity limit must be a non-negative integer");
+  }
+  const rows = options.status === undefined
+    ? db.prepare("SELECT * FROM opportunities ORDER BY created_at DESC, id DESC LIMIT ?").all(options.limit ?? -1)
+    : db.prepare("SELECT * FROM opportunities WHERE status = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+      .all(options.status, options.limit ?? -1);
+  return rows.map(deserializeOpportunity);
+}
+
+/** Records a review decision only; conversion never creates or executes a goal. */
+export function updateOpportunityReview(db: DatabaseType, id: string, review: OpportunityReview): Opportunity {
+  return db.transaction(() => {
+    validateOpportunityStatus(review.status);
+    const opportunity = getOpportunityById(db, id);
+    if (!opportunity) throw new Error(`Opportunity not found: ${id}`);
+    const allowed: Partial<Record<OpportunityStatus, OpportunityStatus[]>> = {
+      discovered: ["shortlisted", "rejected"],
+      shortlisted: ["rejected", "converted"],
+    };
+    if (!allowed[opportunity.status]?.includes(review.status)) {
+      throw new Error(`Invalid opportunity transition: ${opportunity.status} -> ${review.status}`);
+    }
+    const updated: Opportunity = {
+      ...opportunity,
+      status: review.status,
+      reviewedAt: new Date().toISOString(),
+      convertedGoalId: review.convertedGoalId ?? null,
+    };
+    validateOpportunity(updated);
+    db.prepare("UPDATE opportunities SET status = ?, reviewed_at = ?, converted_goal_id = ? WHERE id = ?")
+      .run(updated.status, updated.reviewedAt, updated.convertedGoalId, id);
+    return updated;
+  })();
+}
 
 export function withTransaction<T>(db: DatabaseType, fn: () => T): T {
   const transaction = db.transaction(() => fn());
