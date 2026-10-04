@@ -57,6 +57,74 @@ describe("Local Qwen opportunity generator", () => {
     expect(await generator(input)).toEqual([candidate]);
   });
 
+  it.each([
+    { title: "Early Tester Recruitment for Repetitive Task Automation Tool", description: "Recruit early testers from accounting firms." },
+    { description: "Contact accounting firms to invite users." },
+    { title: "Customer outreach" },
+    { description: "Publish a project announcement." },
+    { description: "Make a payment to the service provider." },
+    { description: "Submit an application to a marketplace." },
+    { description: "Apply for a freelance project." },
+    { description: "Create an account with an external service." },
+    { description: "Purchase advertising and spend money." },
+    { description: "Send email and DM messages to prospective clients." },
+    { description: "Messaging prospective users to request feedback." },
+    { evidence: ["Recruit early testers for the prototype."] },
+    { description: "Update an external service account profile." },
+  ])("escalates external action wording %j after parsing", async (fields) => {
+    const value = { ...candidate, ...fields, requiresExternalAction: false };
+    const { generator } = fake(JSON.stringify({ opportunities: [value] }));
+    expect(await generator(input)).toEqual([{ ...value, requiresExternalAction: true }]);
+  });
+
+  it("keeps purely internal analysis false", async () => {
+    const value = { ...candidate, title: "Internal workflow analysis", description: "Analyze local payment logs and draft internal recommendations.", evidence: ["Existing local transaction records."] };
+    expect(await fake(JSON.stringify({ opportunities: [value] })).generator(input)).toEqual([value]);
+  });
+
+  it("escalates the exact live early-access case", async () => {
+    const value = {
+      ...candidate,
+      title: "Early Tester Program for Accounting Firms",
+      description: "Offer early access to the MVP for accounting firms to test and provide feedback on automating repetitive tasks.",
+      requiresExternalAction: false,
+    };
+    expect(await fake(JSON.stringify({ opportunities: [value] })).generator(input))
+      .toEqual([{ ...value, requiresExternalAction: true }]);
+  });
+
+  it.each([
+    "Offer a trial to companies", "Invite people to evaluate the tool", "Onboard businesses",
+    "Provide users with trial access", "Give a client access to the prototype", "Grant customers access",
+    "Run a pilot with a firm", "Launch a tester program", "Request feedback from users",
+    "Collect feedback from a person", "Reach out to companies", "Message a customer",
+  ])("escalates external engagement: %s", async (description) => {
+    const value = { ...candidate, description, requiresExternalAction: false };
+    expect((await fake(JSON.stringify({ opportunities: [value] })).generator(input))[0].requiresExternalAction).toBe(true);
+  });
+
+  it("combines engagement and external-party concepts across fields", async () => {
+    const value = { ...candidate, title: "Accounting firms", description: "Offer a prototype trial", evidence: [] };
+    expect((await fake(JSON.stringify({ opportunities: [value] })).generator(input))[0].requiresExternalAction).toBe(true);
+    const evidenceOnly = { ...candidate, evidence: ["Invite businesses to try the tool."] };
+    expect((await fake(JSON.stringify({ opportunities: [evidenceOnly] })).generator(input))[0].requiresExternalAction).toBe(true);
+  });
+
+  it("keeps analysis of already-local customer feedback false", async () => {
+    const value = { ...candidate, description: "Analyze customer feedback already stored locally", evidence: ["Local feedback archive"] };
+    expect(await fake(JSON.stringify({ opportunities: [value] })).generator(input)).toEqual([value]);
+  });
+
+  it("requires an external-party concept for engagement-only wording", async () => {
+    const value = { ...candidate, title: "Internal recommendations", description: "Offer an internal refactoring plan", evidence: [] };
+    expect(await fake(JSON.stringify({ opportunities: [value] })).generator(input)).toEqual([value]);
+  });
+
+  it("never downgrades model-provided true for internal-looking text", async () => {
+    const value = { ...candidate, requiresExternalAction: true };
+    expect(await fake(JSON.stringify({ opportunities: [value] })).generator(input)).toEqual([value]);
+  });
+
   it("returns at most three candidates and strips untrusted metadata", async () => {
     const { generator } = fake(JSON.stringify({ opportunities: Array.from({ length: 5 }, (_, index) => ({
       ...candidate, title: `Idea ${index}`, source: "forged", id: "forged", status: "converted", convertedGoalId: "goal",
@@ -135,7 +203,10 @@ describe("Local Qwen opportunity generator", () => {
     const fetch = vi.fn(() => { throw new Error("Network unavailable"); });
     vi.stubGlobal("fetch", fetch);
     try {
-      const { generator } = fake(JSON.stringify({ opportunities: [{ ...candidate, source: "forged", requiresExternalAction: true }] }));
+      const { generator } = fake(JSON.stringify({ opportunities: [{
+        ...candidate, title: "Early Tester Recruitment", description: "Recruit early testers from accounting firms.",
+        source: "forged", requiresExternalAction: false,
+      }] }));
       const result = await discoverOpportunities(db, input, generator);
       expect(result.inserted).toBe(1);
       expect(db.getOpportunityById(result.insertedIds[0])).toMatchObject({ source: input.source, requiresExternalAction: true, status: "discovered" });
