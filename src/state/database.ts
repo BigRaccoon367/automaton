@@ -664,7 +664,9 @@ function validateOpportunityStatus(status: OpportunityStatus): void {
   }
 }
 
-function validateOpportunity(opportunity: Opportunity): void {
+export function validateOpportunity(
+  opportunity: Omit<Opportunity, "id" | "description" | "source" | "createdAt" | "reviewedAt">,
+): void {
   if (typeof opportunity.title !== "string" || !opportunity.title.trim()) {
     throw new Error("Opportunity title must not be empty");
   }
