@@ -31,8 +31,8 @@ describe("Opportunity persistence", () => {
   });
 
   it("creates the V12 schema, indexes, and SQL defaults", () => {
-    expect(schema.SCHEMA_VERSION).toBe(12);
-    expect(db.raw.prepare("SELECT MAX(version) AS version FROM schema_version").get()).toEqual({ version: 12 });
+    expect(schema.SCHEMA_VERSION).toBeGreaterThanOrEqual(12);
+    expect(db.raw.prepare("SELECT MAX(version) AS version FROM schema_version").get()).toEqual({ version: schema.SCHEMA_VERSION });
     const indexes = db.raw.pragma("index_list(opportunities)") as { name: string }[];
     expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
       "idx_opportunities_status", "idx_opportunities_created_at",
@@ -168,7 +168,7 @@ describe("Opportunity persistence", () => {
       expect(db.getKV("new")).toBe("value");
       db.insertOpportunity(input);
       expect(db.getOpportunityById(input.id!)?.title).toBe(input.title);
-      expect(db.raw.prepare("SELECT MAX(version) AS version FROM schema_version").get()).toEqual({ version: 12 });
+      expect(db.raw.prepare("SELECT MAX(version) AS version FROM schema_version").get()).toEqual({ version: schema.SCHEMA_VERSION });
       expect(db.raw.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
     },
   );

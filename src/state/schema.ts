@@ -5,7 +5,7 @@
  * The database IS the automaton's memory.
  */
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 export const CREATE_TABLES = `
   -- Schema version tracking
@@ -701,4 +701,15 @@ export const MIGRATION_V12 = `
 
   CREATE INDEX IF NOT EXISTS idx_opportunities_status ON opportunities(status);
   CREATE INDEX IF NOT EXISTS idx_opportunities_created_at ON opportunities(created_at);
+`;
+
+// V0.8: immutable draft proposals, separate from goals and execution.
+export const MIGRATION_V13 = `
+  CREATE TABLE IF NOT EXISTS revenue_experiment_plans (
+    id TEXT PRIMARY KEY,
+    opportunity_id TEXT NOT NULL REFERENCES opportunities(id),
+    plan_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_experiment_plans_opportunity ON revenue_experiment_plans(opportunity_id);
 `;

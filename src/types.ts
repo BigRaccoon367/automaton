@@ -659,12 +659,38 @@ export interface OpportunityReview {
   convertedGoalId?: string | null;
 }
 
+/** A proposal for human review, never execution approval. */
+export interface RevenueExperimentPlan {
+  opportunityId: string;
+  problem: string;
+  customer: string;
+  offer: string;
+  channel: string;
+  proposedPriceCents: number;
+  revenueModel: string;
+  experiment: string;
+  successMetric: string;
+  estimatedCostCents: number;
+  riskLevel: OpportunityRiskLevel;
+  requiresExternalAction: boolean;
+  status: "draft";
+}
+
+export interface RevenueExperimentPlanRecord {
+  id: string;
+  plan: RevenueExperimentPlan;
+  createdAt: string;
+}
+
 export interface AutomatonDatabase {
   // Discovery storage only: these methods never create goals or execute actions.
   insertOpportunity(opportunity: OpportunityInput): Opportunity;
   getOpportunityById(id: string): Opportunity | undefined;
   listOpportunities(options?: OpportunityListOptions): Opportunity[];
   updateOpportunityReview(id: string, review: OpportunityReview): Opportunity;
+  insertRevenueExperimentPlan(plan: RevenueExperimentPlan): RevenueExperimentPlanRecord;
+  getRevenueExperimentPlanById(id: string): RevenueExperimentPlanRecord | undefined;
+  listRevenueExperimentPlans(opportunityId?: string): RevenueExperimentPlanRecord[];
 
   // Identity
   getIdentity(key: string): string | undefined;

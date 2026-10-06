@@ -31,6 +31,8 @@ import type {
   OpportunityListOptions,
   OpportunityReview,
   OpportunityStatus,
+  RevenueExperimentPlan,
+  RevenueExperimentPlanRecord,
 } from "../types.js";
 import {
   SCHEMA_VERSION,
@@ -52,6 +54,7 @@ import {
   MIGRATION_V10,
   MIGRATION_V11,
   MIGRATION_V12,
+  MIGRATION_V13,
 } from "./schema.js";
 import type {
   RiskLevel,
@@ -78,6 +81,7 @@ import type {
 } from "../types.js";
 import { ulid } from "ulid";
 import { createLogger } from "../observability/logger.js";
+import { escalateRevenuePlanSafety, validateRevenueExperimentPlan } from "../opportunities/revenue-plan.js";
 
 const logger = createLogger("database");
 
@@ -529,6 +533,9 @@ export function createDatabase(dbPath: string): AutomatonDatabase {
     getOpportunityById: (id) => getOpportunityById(db, id),
     listOpportunities: (options) => listOpportunities(db, options),
     updateOpportunityReview: (id, review) => updateOpportunityReview(db, id, review),
+    insertRevenueExperimentPlan: (plan) => insertRevenueExperimentPlan(db, plan),
+    getRevenueExperimentPlanById: (id) => getRevenueExperimentPlanById(db, id),
+    listRevenueExperimentPlans: (opportunityId) => listRevenueExperimentPlans(db, opportunityId),
     getIdentity,
     setIdentity,
     insertTurn,
@@ -639,6 +646,10 @@ function applyMigrations(db: DatabaseType): void {
       version: 12,
       apply: () => db.exec(MIGRATION_V12),
     },
+    {
+      version: 13,
+      apply: () => db.exec(MIGRATION_V13),
+    },
   ];
 
   for (const m of migrations) {
@@ -653,6 +664,41 @@ function applyMigrations(db: DatabaseType): void {
 }
 
 // ─── Exported Helpers ───────────────────────────────────────────
+
+export function insertRevenueExperimentPlan(db: DatabaseType, input: RevenueExperimentPlan): RevenueExperimentPlanRecord {
+  validateRevenueExperimentPlan(input);
+  return db.transaction(() => {
+    const opportunity = getOpportunityById(db, input.opportunityId);
+    if (!opportunity) throw new Error(`Opportunity not found: ${input.opportunityId}`);
+    if (opportunity.status === "rejected" || opportunity.status === "converted") {
+      throw new Error("Cannot store a draft for a rejected or converted opportunity");
+    }
+    const plan = escalateRevenuePlanSafety(input, opportunity.requiresExternalAction);
+    const record = { id: ulid(), plan, createdAt: new Date().toISOString() };
+    db.prepare("INSERT INTO revenue_experiment_plans (id, opportunity_id, plan_json, created_at) VALUES (?, ?, ?, ?)")
+      .run(record.id, plan.opportunityId, JSON.stringify(plan), record.createdAt);
+    return record;
+  })();
+}
+
+function deserializeRevenueExperimentPlan(row: any): RevenueExperimentPlanRecord {
+  const plan: unknown = JSON.parse(row.plan_json);
+  validateRevenueExperimentPlan(plan);
+  if (plan.opportunityId !== row.opportunity_id) throw new Error("Experiment plan opportunity reference mismatch");
+  return { id: row.id, plan, createdAt: row.created_at };
+}
+
+export function getRevenueExperimentPlanById(db: DatabaseType, id: string): RevenueExperimentPlanRecord | undefined {
+  const row = db.prepare("SELECT * FROM revenue_experiment_plans WHERE id = ?").get(id);
+  return row ? deserializeRevenueExperimentPlan(row) : undefined;
+}
+
+export function listRevenueExperimentPlans(db: DatabaseType, opportunityId?: string): RevenueExperimentPlanRecord[] {
+  const rows = opportunityId === undefined
+    ? db.prepare("SELECT * FROM revenue_experiment_plans ORDER BY created_at DESC, id DESC").all()
+    : db.prepare("SELECT * FROM revenue_experiment_plans WHERE opportunity_id = ? ORDER BY created_at DESC, id DESC").all(opportunityId);
+  return rows.map(deserializeRevenueExperimentPlan);
+}
 
 const OPPORTUNITY_STATUSES: OpportunityStatus[] = [
   "discovered", "shortlisted", "rejected", "converted",
